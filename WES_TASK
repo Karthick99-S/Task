@@ -1,4 +1,4 @@
-Whole Exome Sequnecing Analysis
+Whole Exome Sequencing Analysis
 
 # Step 1: Quality Control using FastQC
 # This command runs FastQC to perform quality checks on the raw sequencing data for both tumor and normal samples.
