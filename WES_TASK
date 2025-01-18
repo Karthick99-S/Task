@@ -1,0 +1,50 @@
+Whole Exome Sequnecing Analysis
+
+# Step 1: Quality Control using FastQC
+# This command runs FastQC to perform quality checks on the raw sequencing data for both tumor and normal samples.
+./fastqc /home/exonn/NGS/CancerData/PA220KH-lib09-P19-Tumor_S2_L001_R1_001.fastq.gz /home/exonn/NGS/CancerData/PA220KH-lib09-P19-Tumor_S2_L001_R2_001.fastq.gz \/home/exonn/NGS/CancerData/PA221MH-lib09-P19-Norm_S1_L001_R1_001.fastq.gz /home/exonn/NGS/CancerData/PA221MH-lib09-P19-Norm_S1_L001_R2_001.fastq.gz
+
+# Step 2: Read Trimming using Trimmomatic
+# This command removes adapter sequences and low-quality bases from the raw reads to improve downstream analyses.
+java -jar /home/exonn/NGS/Trimmomatic-0.39/trimmomatic-0.39.jar PE /home/exonn/NGS/CancerData/PA220KH-lib09-P19-Tumor_S2_L001_R1_001.fastq.gz /home/exonn/NGS/CancerData/PA220KH-lib09-P19-Tumor_S2_L001_R2_001.fastq.gz /home/exonn/NGS/Trimmomatic-0.39/cancer_1_paired.fq.gz cancer_1_unpaired.fq.gz /home/exonn/NGS/Trimmomatic-0.39/cancer_2_paired.fq.gz cancer_2_unpaired.fq.gz ILLUMINACLIP:/home/exonn/NGS/Trimmomatic-0.39/adapters/NexteraPE-PE.fa:2:30:10 LEADING:3 TRAILING:3 MINLEN:36
+java -jar /home/exonn/NGS/Trimmomatic-0.39/trimmomatic-0.39.jar PE /home/exonn/NGS/CancerData/PA221MH-lib09-P19-Norm_S1_L001_R1_001.fastq.gz /home/exonn/NGS/CancerData/PA221MH-lib09-P19-Norm_S1_L001_R2_001.fastq.gz /home/exonn/NGS/Trimmomatic-0.39/Normal_1_paired.fq.gz Nor_1_unpaired.fq.gz /home/exonn/NGS/Trimmomatic-0.39/Normal_2_paired.fq.gz Nor_2_unpaired.fq.gz ILLUMINACLIP:/home/exonn/NGS/Trimmomatic-0.39/adapters/NexteraPE-PE.fa:2:30:10 LEADING:3 TRAILING:3 MINLEN:36
+
+# Step 3: Read Alignment using BWA-MEM
+# Align the paired-end reads from both cancer and normal samples to the human reference genome (hg38).
+bwa mem -M -t 8 -R "@RG\tID:Cancer\tSM:Sample1\tPL:ILLUMINA" hg38.fa cancer_1_paired.fq.gz cancer_2_paired.fq.gz > Cancer.sam
+bwa mem -M -t 8 -R "@RG\tID:Normal\tSM:Sample2\tPL:ILLUMINA" hg38.fa.gz Normal_1_paired.fq.gz Normal_2_paired.fq.gz > Normal.sam
+
+# Step 4: Convert and Sort BAM Files using Samtools
+# Convert SAM files to BAM format and sort them by genomic position.
+samtools view -Sb Cancer.sam > Cancer.bam
+samtools view -Sb Normal.sam > Normal.bam
+samtools sort -o Cancer_sort.bam Cancer.bam
+samtools sort -o Normal_sort.bam Normal.bam
+
+# Step 5: Mark Duplicates using GATK
+# Mark duplicates in both the cancer and normal BAM files to avoid PCR duplicates biasing mutation calling.
+gatk MarkDuplicates -I Cancer_sort.bam -O Cancer_dup.bam -M can_metrics.txt
+gatk MarkDuplicates -I Normal_sort.bam -O Normal_dup.bam -M Nor_metrics.txt
+
+# Step 6: Base Quality Score Recalibration using GATK
+# Recalibrate base quality scores using known variants (e.g., dbSNP) to improve the accuracy of downstream variant calling.
+gatk BaseRecalibrator -R hg38.fa.gz -I Cancer_dup.bam --known-sites resources_broad_hg38_v0_Homo_sapiens_assembly38.dbsnp138.vcf -O Cancer_recal.table
+gatk BaseRecalibrator -R hg38.fa.gz -I Normal_dup.bam --known-sites resources_broad_hg38_v0_Homo_sapiens_assembly38.dbsnp138.vcf -O Normal_recal.table
+
+# Step 7: Apply Base Recalibration using GATK
+# Apply the recalibrated base quality scores to the BAM files for both the cancer and normal samples.
+gatk ApplyBQSR -R hg38.fa -I Cancer_dup.bam --bqsr-recal-file Cancer_recal.table -O Cancer_bqsr.bam
+gatk ApplyBQSR -R hg38.fa -I Normal_dup.bam --bqsr-recal-file Normal_recal.table -O Normal_bqsr.bam
+
+# Step 8: Somatic Variant Calling using GATK Mutect2
+# Perform somatic mutation calling by comparing the cancer and normal samples using Mutect2.
+# This step calls variants by using known germline resources (e.g., gnomAD).
+gatk Mutect2 -R hg38.fa -I Cancer_bqsr.bam -I Normal_bqsr.bam --normal-sample Sample2 --tumor-sample Sample1 --germline-resource hg38_v0_somatic-hg38_af-only-gnomad.hg38.vcf.gz -O somatic_RAW.vcf
+
+# Step 9: Filter Somatic Mutations using GATK FilterMutectCalls
+# Filter out low-confidence or false-positive mutations to retain only high-quality somatic mutations.
+gatk FilterMutectCalls -R hg38.fa -V somatic_RAW.vcf -O somatics_filtered.vcf
+
+# Step 10: Variant Annotation using ANNOVAR
+# Annotate the somatic mutations with gene information, functional consequences, and clinical significance from multiple databases.
+./table_annovar.pl /home/exonn/NGS/annovar/somatics_filtered.vcf humandb/ -buildver hg38 -out Cancer_annotated -remove -protocol refGene,dbsnp,cosmic,gnomad,clinvar_20240917 -operation g,f,f,f,f -nastring . -vcfinput
