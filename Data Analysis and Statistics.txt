@@ -1,0 +1,101 @@
+# Load necessary libraries
+# Install packages
+# install.packages("data.table")
+# install.packages("dplyr")
+# install.packages("ggplot2")
+# install.packages("tidyr")
+
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# Load the data (adjust the file path)
+data <- fread("C:/Users/ADMIN/Music/PupilBio-TASK/PMP/PupilBioTest_PMP_revA.csv")
+
+# Check unique values for strand, tissue, and replicate columns
+unique(data$strand)    # Check strand types ('f', 'r')
+unique(data$Tissue)    # Check tissues ('cfDNA', 'Islet')
+unique(data$Replicate) # Check replicates (1, 2)
+
+# Calculate Total Coverage for each row (sum of all PMPs)
+data$Total_Coverage <- rowSums(data[, c("`000", "`001", "`010", "`011", "`100", "`101", "`110", "`111")])
+
+# Coverage Statistics for each tissue
+coverage_stats <- data %>%
+  group_by(Tissue) %>%
+  summarize(
+    Median_Coverage = median(Total_Coverage, na.rm = TRUE),
+    Mean_Coverage = mean(Total_Coverage, na.rm = TRUE),
+    SD_Coverage = sd(Total_Coverage, na.rm = TRUE),
+    CV_Coverage = (sd(Total_Coverage, na.rm = TRUE) / mean(Total_Coverage, na.rm = TRUE)) * 100
+  )
+
+# Print the coverage statistics
+print(coverage_stats)
+
+# Generate a boxplot for coverage distribution by tissue type
+ggplot(data, aes(x = Tissue, y = Total_Coverage, fill = Tissue)) +
+  geom_boxplot() +
+  labs(title = "CpG Coverage Distribution by Tissue", x = "Tissue", y = "Total Coverage") +
+  theme_minimal()
+
+# Calculate the fraction of reads for each PMP in each tissue
+pmp_fraction <- data %>%
+  group_by(Tissue) %>%
+  summarise(across(c("`000", "`001", "`010", "`011", "`100", "`101", "`110", "`111"), 
+                   ~ sum(.) / sum(data$Total_Coverage))) %>%
+  pivot_longer(cols = -Tissue, names_to = "PMP", values_to = "Fraction")
+
+# View the fraction results
+print(pmp_fraction)
+
+# Perform Chi-squared test for each PMP to check for tissue differentiation
+results <- list()
+for (pmp in c("`000", "`001", "`010", "`011", "`100", "`101", "`110", "`111")) {
+  contingency_table <- table(data$Tissue, data[[pmp]])
+  test_result <- chisq.test(contingency_table, simulate.p.value = TRUE, B = 2000)
+  results[[pmp]] <- list(PMP = pmp, p_value = test_result$p.value)
+}
+
+# Combine results into a data frame and filter significant PMPs (p-value < 0.05)
+pmp_results <- do.call(rbind, results)
+pmp_results <- as.data.frame(pmp_results)
+colnames(pmp_results) <- c("PMP", "p_value")
+significant_pmps <- pmp_results[pmp_results$p_value < 0.05, ]
+print(significant_pmps)
+
+# Filter significant PMP columns
+significant_pmp_columns <- as.character(significant_pmps$PMP)
+
+# Calculate Variant Read Fraction (VRF) for significant PMPs
+vrf_data <- data %>%
+  group_by(Tissue) %>%
+  summarise(across(all_of(significant_pmp_columns), 
+                   ~ mean(. / Total_Coverage), .names = "VRF_{col}"))
+
+# Reshape the VRF data for easier visualization
+vrf_long <- vrf_data %>%
+  pivot_longer(cols = starts_with("VRF"), names_to = "PMP", values_to = "Mean_VRF")
+
+# View the VRF results
+print(vrf_long)
+
+# Filter PMPs with high VRF for cfDNA and Islet
+cfDNA_specific_pmps <- vrf_long %>%
+  filter(Tissue == "cfDNA", Mean_VRF > 0.1)  # Adjust threshold as needed
+print(cfDNA_specific_pmps)
+
+islet_specific_pmps <- vrf_long %>%
+  filter(Tissue == "Islet", Mean_VRF > 0.1)
+print(islet_specific_pmps)
+
+# Plot Mean VRF for each PMP and Tissue
+ggplot(vrf_long, aes(x = PMP, y = Mean_VRF, fill = Tissue)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Mean Variant Read Fraction (VRF) by PMP and Tissue",
+       x = "PMP",
+       y = "Mean VRF",
+       fill = "Tissue") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
